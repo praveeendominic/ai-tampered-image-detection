@@ -1,28 +1,12 @@
-# albumentations==1.3.0
-# matplotlib
-# numpy
-# scikit_learn
-# timm
-# fvcore
-# tensorboard
-# pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-# pip install streamlit pillow opencv-python numpy imdlbenco>=0.1.36
-
--c constraints.txt
-
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 streamlit==1.37.1
-
-# PyTorch CPU wheels that are available in Streamlit Cloud
 torch==2.8.0+cpu
 torchvision==0.23.0+cpu
 
-# Libs compatible with IMDLBenCo + your app
 timm==0.9.16
 imdlbenco==0.1.42
-grad-cam==1.3.7
 numpy==1.26.4
 opencv-python-headless==4.8.1.78
-Pillow>=10.2.0
-scikit-image>=0.22.0
+Pillow==10.2.0
+scikit-image==0.22.0
