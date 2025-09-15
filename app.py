@@ -158,8 +158,17 @@ def load_model(ckpt_path: str, input_size: int):
         predict_head_norm="BN",
         edge_lambda=20,
     )
-
-    model_cls = MODELS.get("IML_ViT")
+    import importlib
+    importlib.import_module("IMDLBenCo.model_zoo.iml_vit.iml_vit")
+    from IMDLBenCo.registry import MODELS
+    
+    try:
+        model_cls = MODELS.get("IML_ViT")
+    except KeyError:
+        available = getattr(MODELS, "_obj_dict", {})
+        raise RuntimeError(
+        f'IML_ViT not in registry. Available: {list(available.keys())}'
+        )   
     model = model_cls(**model_args)
     model.eval()
 
