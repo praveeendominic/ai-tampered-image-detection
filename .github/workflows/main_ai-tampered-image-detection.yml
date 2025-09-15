@@ -1,79 +1,4 @@
-name: Build and deploy Python app to Azure Web App - ai-tampered-image-detection
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      # 1) Checkout WITH LFS
-      - name: Checkout (with Git LFS)
-        uses: actions/checkout@v4
-        with:
-          lfs: true
-          fetch-depth: 0
-
-      # 2) (Paranoid) make sure LFS objects are materialized
-      - name: Fetch & checkout LFS objects
-        run: |
-          git lfs install
-          git lfs fetch --all
-          git lfs checkout
-          ls -lh
-          ls -lh weights || true
-
-      # 3) Fail fast if the checkpoint is missing or still a pointer file
-      - name: Verify weights file is real (not an LFS pointer)
-        run: |
-          set -e
-          FILE="weights/iml_vit_checkpoint_casiav2.pth"
-          if [ ! -f "$FILE" ]; then
-            echo "::error::Missing weights file at $FILE"
-            exit 1
-          fi
-          SIZE=$(stat -c%s "$FILE") || SIZE=0
-          echo "Weights size: $((SIZE/1024/1024)) MB"
-          head -c 512 "$FILE" | grep -qi "git-lfs" && {
-            echo "::error::The weights file is a Git-LFS pointer. LFS objects were not downloaded."
-            exit 1
-          }
-          # Optional: enforce a minimum size (e.g., > 100MB)
-          if [ "$SIZE" -lt 100000000 ]; then
-            echo "::error::Weights file looks too small; probably not the real checkpoint."
-            exit 1
-          fi
-
-      # 4) Python is not needed for packaging, but keep if you want to run quick scripts
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      # (Optional) Skip installing deps here; App Service will do it on deploy.
-      # - name: Create and start virtual environment
-      #   run: |
-      #     python -m venv venv
-      #     source venv/bin/activate
-      # - name: Install dependencies
-      #   run: pip install -r requirements.txt
-
-      # 5) Upload only what the app needs
-      - name: Upload artifact for deployment
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-app
-          path: |
-            .
-            !.git/**
-            !.github/**
-            !venv/**
-            !**/__pycache__/**
+# ... keep your current build job as-is ...
 
   deploy:
     runs-on: ubuntu-latest
@@ -82,8 +7,12 @@ jobs:
       id-token: write
       contents: read
 
+    env:
+      APP_NAME: ai-tampered-image-detection
+      RG_NAME: ark_ml_rg        # <--- change if your resource group is different
+
     steps:
-      - name: Download artifact
+      - name: Download artifact from build job
         uses: actions/download-artifact@v4
         with:
           name: python-app
@@ -95,8 +24,30 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_4A455CB7571048DEBDCAB3BBB7872631 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_B5004FF9B6DD4545B65AC0EFAFFA50A2 }}
 
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
+      # helpful when a previous OneDeploy/Oryx build is still running/locked
+      - name: Stop app (release file locks)
+        run: az webapp stop --name "$APP_NAME" --resource-group "$RG_NAME"
+
+      - name: Create deployment zip
+        run: |
+          zip -r app.zip . -x "venv/*" ".git/*" ".github/*" "**/__pycache__/*"
+          ls -lh app.zip
+
+      # Retry deploy up to 3 times in case the server still returns 409
+      - name: Deploy via Azure CLI (OneDeploy, synchronous)
+        uses: nick-fields/retry@v3
         with:
-          app-name: 'ai-tampered-image-detection'
-          slot-name: 'Production'
+          max_attempts: 3
+          timeout_minutes: 20
+          retry_on: error
+          shell: bash
+          command: |
+            az webapp deploy \
+              --resource-group "$RG_NAME" \
+              --name "$APP_NAME" \
+              --src-path app.zip \
+              --type zip \
+              --async false
+
+      - name: Start app
+        run: az webapp start --name "$APP_NAME" --resource-group "$RG_NAME"
