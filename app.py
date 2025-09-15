@@ -144,9 +144,22 @@ def build_edge_mask(img_rgb: np.ndarray) -> np.ndarray:
 
 # Model loading
 @st.cache_resource(show_spinner=True)
+@st.cache_resource(show_spinner="Loading model…")
 def load_model(ckpt_path: str, input_size: int):
+    import importlib
+    import torch
+    importlib.import_module("IMDLBenCo.model_zoo.iml_vit.iml_vit")
     from IMDLBenCo.registry import MODELS
 
+    # Ensure model class is registered (IMDLBenCo registers on import)
+    try:
+        model_cls = MODELS.get("IML_ViT")
+    except KeyError:
+        importlib.import_module("IMDLBenCo.model_zoo.iml_vit.iml_vit")
+        from IMDLBenCo.registry import MODELS  # re-import after side-effect
+        model_cls = MODELS.get("IML_ViT")
+
+    # --- instantiate model (adjust args if yours differ) ---
     model_args = dict(
         input_size=input_size,
         patch_size=16,
@@ -158,48 +171,55 @@ def load_model(ckpt_path: str, input_size: int):
         predict_head_norm="BN",
         edge_lambda=20,
     )
-    import importlib
-    importlib.import_module("IMDLBenCo.model_zoo.iml_vit.iml_vit")
-    from IMDLBenCo.registry import MODELS
-    
-    try:
-        model_cls = MODELS.get("IML_ViT")
-    except KeyError:
-        available = getattr(MODELS, "_obj_dict", {})
-        raise RuntimeError(
-        f'IML_ViT not in registry. Available: {list(available.keys())}'
-        )   
     model = model_cls(**model_args)
-    model.eval()
 
-    if ckpt_path and os.path.isfile(ckpt_path):
-        ckpt = torch.load(ckpt_path, map_location="cpu")
-        state = None
-        for key in ["model", "state_dict", "ema_state_dict", "model_state", "net"]:
-            if isinstance(ckpt, dict) and key in ckpt and isinstance(ckpt[key], dict):
-                state = ckpt[key]
+    # --- load checkpoint robustly across PyTorch versions ---
+    def _torch_load(weights_only_flag: bool):
+        return torch.load(
+            ckpt_path,
+            map_location="cpu",
+            weights_only=weights_only_flag,  # PyTorch>=2.6 default True breaks legacy ckpts
+        )
+
+    try:
+        ckpt = _torch_load(True)   # try the safe / default path first
+    except Exception as e_safe:
+        # Fall back to legacy behavior (only if you trust the checkpoint source!)
+        st.info(
+            "Checkpoint requires legacy unpickling. "
+            "Retrying with weights_only=False because the file is trusted."
+        )
+        ckpt = _torch_load(False)
+
+    # Accept a variety of checkpoint layouts
+    if isinstance(ckpt, dict):
+        for key in ("model", "state_dict", "net", "ema", "model_state_dict"):
+            if key in ckpt and isinstance(ckpt[key], dict):
+                state_dict = ckpt[key]
                 break
-        if state is None:
-            state = ckpt if isinstance(ckpt, dict) else None
-
-        def _strip(sd, prefix):
-            return {(k[len(prefix):] if k.startswith(prefix) else k): v for k, v in sd.items()}
-
-        if state is not None:
-            for pfx in ["module.", "model.", "net.", "student.", "encoder."]:
-                state = _strip(state, pfx)
-            missing, unexpected = model.load_state_dict(state, strict=False)
-            st.write("Loaded checkpoint:", os.path.basename(ckpt_path))
-            if missing:
-                st.info(f"Missing keys: {len(missing)}")
-            if unexpected:
-                st.info(f"Unexpected keys: {len(unexpected)}")
         else:
-            st.warning("Checkpoint loaded but no compatible state dict found. Using random weights.")
+            # maybe the dict itself is the state_dict
+            state_dict = ckpt
     else:
-        st.warning("No checkpoint file found; using random weights (not recommended).")
+        # unexpected format; try to treat as state_dict
+        state_dict = ckpt
 
+    # Remove potential DataParallel wrappers
+    cleaned = {}
+    for k, v in state_dict.items():
+        if k.startswith("module."):
+            k = k[len("module."):]
+        cleaned[k] = v
+
+    missing, unexpected = model.load_state_dict(cleaned, strict=False)
+    if missing:
+        st.warning(f"Missing keys when loading weights: {sorted(missing)[:8]}{' …' if len(missing)>8 else ''}")
+    if unexpected:
+        st.warning(f"Unexpected keys in checkpoint: {sorted(unexpected)[:8]}{' …' if len(unexpected)>8 else ''}")
+
+    model.eval()
     return model
+
 
 # Inference
 def preprocess_for_model(pil_img: Image.Image, input_size: int, keep_aspect: bool, normalize: bool):
