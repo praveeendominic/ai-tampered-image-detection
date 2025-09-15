@@ -7,6 +7,16 @@ import tempfile
 import inspect
 from pathlib import Path
 
+import importlib
+from IMDLBenCo.registry import MODELS
+
+def _ensure_iml_vit_registered():
+    try:
+        MODELS.get("IML_ViT")
+    except KeyError:
+        importlib.import_module("IMDLBenCo.model_zoo.iml_vit.iml_vit")
+
+
 import numpy as np
 from PIL import Image
 
