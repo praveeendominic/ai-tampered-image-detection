@@ -140,6 +140,27 @@ def build_edge_mask(img_rgb: np.ndarray) -> np.ndarray:
         edges = cv2.dilate(edges, kernel, iterations=dilate_iter)
     return (edges.astype(np.float32) / 255.0)
 
+import os, io, streamlit as st
+
+def _assert_real_checkpoint(ckpt_path: str):
+    if not os.path.exists(ckpt_path):
+        st.error(f"Checkpoint not found: {ckpt_path}")
+        st.stop()
+    size_mb = os.path.getsize(ckpt_path) / (1024 * 1024)
+    st.write(f"Found checkpoint: {ckpt_path}  ({size_mb:.2f} MB)")
+    # LFS pointer files are ~100–200 bytes and contain this header
+    with open(ckpt_path, "rb") as f:
+        head = f.read(256)
+    if b"git-lfs" in head or b"oid sha256" in head:
+        st.error(
+            "Weights file is a Git-LFS pointer. Your deployment did not fetch "
+            "the real weights. Update the GitHub Action to pull LFS objects."
+        )
+        st.code(head.decode("ascii", "ignore"))
+        st.stop()
+
+# at the top of load_model(...)
+_assert_real_checkpoint(ckpt_path)
 
 
 # Model loading
